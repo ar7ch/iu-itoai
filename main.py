@@ -40,13 +40,15 @@ class Note:
     def distance(self, other: Note) -> int:
         return abs(self.midi_code - other.midi_code)
 
-    def to_midi_msg(self, note_on, time=None):
+    def to_midi_msg(self, note_on, time=None, velocity=None):
         msg_type = 'note_on'
         if not note_on:
             msg_type = 'note_off'
         if time is None:
             time = self.time_delta
-        return mido.Message(msg_type, note=self.midi_code+12, velocity=self.velocity, time=time)
+        if velocity is None:
+            velocity = self.velocity
+        return mido.Message(msg_type, note=self.midi_code+12, velocity=velocity, time=time)
 
 
 def number_to_note(number: int) -> tuple:
@@ -87,10 +89,10 @@ class Chord:
     def __repr__(self):
         return f'{self.name}{self.notes}'
 
-    def to_midi_messages(self, note_on=True, time=None) -> list[mido.Message]:
+    def to_midi_messages(self, note_on=True, time=None, velocity=None) -> list[mido.Message]:
         msgs = []
         for note in self.notes:
-            msgs.append(note.to_midi_msg(note_on, time))
+            msgs.append(note.to_midi_msg(note_on, time, velocity))
         return msgs
 
 
@@ -133,8 +135,15 @@ def accompany(messages: list[mido.Message], chords: list[Chord]) -> list[mido.Me
         note_toggle = True if msg.type == 'note_on' else False
         chord = chords[i]
         if not chord.rest:
-            for note_msg in chord.to_midi_messages(note_on=note_toggle, time=0):
-                new_messages.append(note_msg)
+            off_time = 0
+            if not note_toggle and msg.time != 384:
+                off_time = 384 - msg.time
+            # for first note_off message, make offset such that it complements the whole clock
+            # then we can make offsets 0"""
+            chord_messages = chord.to_midi_messages(note_on=note_toggle, time=0, velocity=49)
+            chord_messages[0].time = off_time
+            for note_to_msg in chord_messages:
+                new_messages.append(note_to_msg)
         if msg.type == 'note_off':
             i += 1
     return new_messages
@@ -160,6 +169,13 @@ def load_midi_file():
     return mid, track, notes
 
 
+def print_midi_file(mid):
+    for i, track in enumerate(mid.tracks):
+        print('Track {}:'.format(i))
+        for msg in track:
+            print(msg)
+
+
 def test():
     note = Note('C', 3)
     chord = get_major_chord(note)
@@ -173,6 +189,7 @@ def do_accompaniment(file, messages, notes):
         _chords.append(get_major_chord(note-24))
     new_messages = accompany(messages, _chords)
     file.tracks[1] = new_messages
+    print_midi_file(file)
     file.save('output.mid')
 
 def main():

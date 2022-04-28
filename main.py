@@ -1,9 +1,72 @@
 from __future__ import annotations
 import mido
+import numpy as np
 
 NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 OCTAVES = list(range(11))
 NOTES_IN_OCTAVE = len(NOTES)
+good_chords_major = {'C': ('C', 'Dm', 'Em', 'F', 'G', 'Am', 'B'),
+                     'C#': ()
+                     }
+
+tonic_pairs = {0: ('C', 'Am'), 1: ('G', 'Em'), 2: ('D', 'A#m'), 3: ('A', 'F#m'), 4: ('E', 'C#m'), 5: ('B', 'G#m'), 6: ('F#', 'D#m')}
+
+class Accompaniment:
+    def __init__(self, chords: list[Chord]):
+        self.chords = chords
+
+class Melody:
+    def __init__(self, midi_filename):
+        # parse midi file
+        self.midi_file, self.midi_messages, self.notes = load_midi_file(midi_filename)
+        # find minimal octave used and tonality of the melody
+        self.min_octave, self.key_pair = self.analyze_melody()
+        # generate all chords suitable for this melody
+        self.chords_dict, self.chords_list = self.generate_chords()
+        self.chords_list = np.array(self.chords_list)
+        # number of notes
+        self.notes_num = len(self.notes)
+
+    def analyze_melody(self):
+        assert len(self.notes) > 0
+        sorted_by_octave = sorted(self.notes, key=lambda n: n.octave)
+        min_octave = sorted_by_octave[0].octave
+        sharp_notes = 0
+        for note in self.notes:
+            if '#' in note.note:
+                sharp_notes += 1
+        key_pair = tonic_pairs[sharp_notes]
+        return min_octave, key_pair
+
+    @staticmethod
+    def get_minor_chord(base: Note) -> Chord:
+        return Chord([base, base+3, base+7])
+
+    @staticmethod
+    def get_major_chord(base: Note) -> Chord:
+        return Chord([base, base+4, base+7])
+
+
+    def generate_chords(self) -> dict:
+        _chords_dict = dict()
+        _chords = []
+        base = Note('C', 0) # consider all possible notes up to octave the melody itself uses
+        while base.octave != self.min_octave:
+            minor_chord = Melody.get_minor_chord(base)
+            major_chord = Melody.get_major_chord(base)
+            # todo add inv, sus
+            major_chord_name = str(base)
+            minor_chord_name = str(base)+'m'
+
+            major_chords.append(major_chord)
+            minor_chords.append(minor_chord)
+            _chords_dict[major_chord_name] = major_chord
+            _chords_dict[minor_chord_name] = minor_chord
+            _chords.append(major_chord)
+            _chords.append(minor_chord)
+
+            base = base + 1
+        return _chords_dict, _chords
 
 
 class Note:
@@ -48,7 +111,7 @@ class Note:
             time = self.time_delta
         if velocity is None:
             velocity = self.velocity
-        return mido.Message(msg_type, note=self.midi_code+12, velocity=velocity, time=time)
+        return mido.Message(msg_type, note=self.midi_code2, velocity=velocity, time=time)
 
 
 def number_to_note(number: int) -> tuple:
@@ -95,34 +158,21 @@ class Chord:
             msgs.append(note.to_midi_msg(note_on, time, velocity))
         return msgs
 
+    def tonic(self) -> Note:
+        return self.notes[0]
+
+    def distance(self, other: Chord) -> int:
+        return self.tonic().distance(other.tonic())
+
+    def has_note(self, note: Note):
+        return note in self.notes
+
 
 chords_dict = dict()
 minor_chords = []
 major_chords = []
 
 
-def get_minor_chord(base: Note) -> Chord:
-    return Chord([base, base+3, base+7])
-
-
-def get_major_chord(base: Note) -> Chord:
-    return Chord([base, base+4, base+7])
-
-def generate_chords(melody_min_octave: int):
-    base = Note('C', 0)
-    while base.octave != melody_min_octave:
-        minor_chord = get_minor_chord(base)
-        major_chord = get_major_chord(base)
-        # todo add inv, sus
-        major_chord_name = str(base)
-        minor_chord_name = str(base)+'m'
-
-        major_chords.append(major_chord)
-        minor_chords.append(minor_chord)
-        chords_dict[major_chord_name] = major_chord
-        chords_dict[minor_chord_name] = minor_chord
-
-        base = base + 1
 
 
 def accompany(messages: list[mido.Message], chords: list[Chord]) -> list[mido.Message]:
@@ -135,13 +185,7 @@ def accompany(messages: list[mido.Message], chords: list[Chord]) -> list[mido.Me
         note_toggle = True if msg.type == 'note_on' else False
         chord = chords[i]
         if not chord.rest:
-            off_time = 0
-            if not note_toggle and msg.time != 384:
-                off_time = 384 - msg.time
-            # for first note_off message, make offset such that it complements the whole clock
-            # then we can make offsets 0"""
-            chord_messages = chord.to_midi_messages(note_on=note_toggle, time=0, velocity=49)
-            chord_messages[0].time = off_time
+            chord_messages = chord.to_midi_messages(note_on=note_toggle, time=0, velocity=45)
             for note_to_msg in chord_messages:
                 new_messages.append(note_to_msg)
         if msg.type == 'note_off':
@@ -149,8 +193,93 @@ def accompany(messages: list[mido.Message], chords: list[Chord]) -> list[mido.Me
     return new_messages
 
 
-def evolution(generations: int, population_size: int) -> list[Chord]:
-    pass
+def evolution(melody: Melody, generations=50, population_size=70, n_offsprings=25) -> Accompaniment:
+    population = initial_population(population_size, melody)
+    most_fit_individual = None
+    for i in range(generations):
+        population = evolution_step(population, n_offsprings)
+        most_fit_individual = population[-1]
+
+    return most_fit_individual
+
+
+def replace_population(population: list[Accompaniment], new_individuals: list[Accompaniment]):
+    population_size = len(population)
+    population.extend(new_individuals)
+    population.sort(key=lambda x: individual_fitness(x))
+    return population[population_size:]
+
+
+def evolution_step(population: list[Accompaniment], n_offsprings: int):
+    mothers, fathers = split_population(population, n_offsprings)
+    offsprings = []
+    for mother, father in zip(mothers, fathers):
+        child = mutate(crossover(mother, father))
+        offsprings.append(child)
+    new_generation = replace_population(population, offsprings)
+    return new_generation
+
+
+def split_population(population: list[Accompaniment], n_offsprings: int) -> tuple:
+    mothers = population[-2 * n_offsprings::2]
+    fathers = population[-2 * n_offsprings+1::2]
+    return mothers, fathers
+
+
+def crossover(mother: Accompaniment, father: Accompaniment) -> Accompaniment:
+    mid = len(mother.chords) // 2
+    assert len(mother.chords) == len(father.chords)
+    mother_head = mother.chords[:mid].copy()
+    mother_tail = mother.chords[mid:].copy()
+    father_tail = father.chords[mid:].copy()
+
+    mapping = {father_tail[i]: mother_tail[i] for i in range(len(mother_tail))}
+
+    for i in range(len(mother_head)):
+        while mother_head[i] in father_tail:
+            mother_head[i] = mapping[mother_head[i]]
+
+    mother_head.extend(father_tail)
+    return Accompaniment(mother_head)
+
+
+def mutate(child: Accompaniment) -> Accompaniment:
+    # swap mutation
+    i, j = np.random.choice(len(child.chords), 2, replace=False)
+    child.chords[i], child.chords[j] = child.chords[j], child.chords[i]
+    return child
+
+
+def initial_population(population_size: int) -> list[Accompaniment]:
+    population = []
+    for i in range(population_size):
+        population.append(get_individual())
+    return population
+
+
+def get_individual() -> Accompaniment:
+    individual = []
+    for j in range(melody.notes_num):
+        individual.append(np.random.choice(melody.chords_list))
+    return Accompaniment(individual)
+
+
+def individual_fitness(acc: Accompaniment):
+    BAD_CHORD_PENALTY = 1000
+    LARGE_DIST_PENALTY = 10
+    penalty = 0
+    max_dist = 1
+    for i in range(len(acc.chords)):
+        if not acc.chords[i].has_note(melody.notes[i]): # idea 1: chords that don't contain accompanying notes are very bad
+            penalty -= BAD_CHORD_PENALTY
+        if acc.chords[i] not in good_chords(melody.key_pair[0]):
+            penalty -= BAD_CHORD_PENALTY
+        if i != len(acc.chords) - 1:
+            dist = acc.chords[i].distance(acc.chords[i+1])
+            if dist > max_dist:
+                max_dist = dist
+    penalty -= max_dist*LARGE_DIST_PENALTY # idea 2: distance between chords are undesirable
+    return penalty
 
 
 def get_notes(midi_track) -> list:
@@ -161,8 +290,8 @@ def get_notes(midi_track) -> list:
     return notes
 
 
-def load_midi_file():
-    mid = mido.MidiFile('barbiegirl_mono.mid')
+def load_midi_file(filename: str):
+    mid = mido.MidiFile()
     # get array of notes
     track = mid.tracks[1]
     notes = get_notes(track)
@@ -183,19 +312,28 @@ def test():
     #print(chord.to_midi_messages(note_on=True))
 
 
-def do_accompaniment(file, messages, notes):
+def do_accompaniment(melody: Melody):
+
     _chords = []
-    for note in notes:
-        _chords.append(get_major_chord(note-24))
-    new_messages = accompany(messages, _chords)
-    file.tracks[1] = new_messages
-    print_midi_file(file)
-    file.save('output.mid')
+    for note in melody.notes:
+        _chords.append(Melody.get_major_chord(note-36))
+    new_messages = accompany(melody.messages, _chords)
+    melody.midi_file.tracks[1] = new_messages
+    print_midi_file(melody.midi_file)
+    melody.midi_file.save('output.mid')
+
+
+def get_good_chords(tonic):
+    pass
+
+
+melody = Melody()
 
 def main():
     test()
-    file, messages, notes = load_midi_file()
-    do_accompaniment(file, messages, notes)
+    global melody
+    melody = Melody('barbiegirl_mono.mid')
+    do_accompaniment(melody)
     print('done')
 
 if __name__ == '__main__':

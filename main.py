@@ -23,6 +23,7 @@ def good_chords(tonic: str) -> str:
     assert 'm' not in tonic
     return good_chords_major[tonic]
 
+
 class Accompaniment:
     def __init__(self, chords: list[Chord]):
         self.chords = chords
@@ -30,6 +31,30 @@ class Accompaniment:
 
     def __repr__(self):
         return str(self.fitness)
+
+    def to_midi(self, melody_msgs) -> mido.MidiTrack:
+        chord_track = mido.MidiTrack()
+        #chord_track.append(mido.Message('program_change', program=0, time=0))
+        c_ind, m_ind = 0, 0
+        while m_ind < len(melody_msgs):
+            note_msg = melody_msgs[m_ind]
+            m_ind += 1
+            if note_msg.type not in ['note_on', 'note_off']:
+                chord_track.append(note_msg)
+                continue
+            chord = self.chords[c_ind]
+            note_on = True if note_msg.type == 'note_on' else False
+            _time = note_msg.time
+            chord_messages = chord.to_midi_messages(note_on=note_on, time=note_msg.time, velocity=40)
+            for chm in chord_messages:
+                chm.time = _time
+                _time = 0
+                chord_track.append(chm)
+            if not note_on:
+                c_ind += 1
+        #chord_track.append(mido.MetaMessage('end_of_track', time=0))
+        return chord_track
+
 
 class Melody:
     def __init__(self, midi_filename):
@@ -132,7 +157,7 @@ class Note:
             time = self.time_delta
         if velocity is None:
             velocity = self.velocity
-        return mido.Message(msg_type, note=self.midi_code, velocity=velocity, time=time)
+        return mido.Message(msg_type, note=self.midi_code, velocity=velocity, time=time, channel=1)
 
 
 def number_to_note(number: int) -> tuple:
@@ -196,24 +221,6 @@ class Chord:
 chords_dict = dict()
 minor_chords = []
 major_chords = []
-
-
-def accompany(messages: list[mido.Message], chords: list[Chord]) -> list[mido.Message]:
-    i = 0
-    new_messages = []
-    for msg in messages:
-        new_messages.append(msg)
-        if msg.type not in ('note_off', 'note_on'):
-            continue
-        note_toggle = True if msg.type == 'note_on' else False
-        chord = chords[i]
-        if not chord.rest:
-            chord_messages = chord.to_midi_messages(note_on=note_toggle, time=0, velocity=40)
-            for note_to_msg in chord_messages:
-                new_messages.append(note_to_msg)
-        if msg.type == 'note_off':
-            i += 1
-    return new_messages
 
 
 def evolution(generations=1000, population_size=100, n_offsprings=80) -> Accompaniment:
@@ -359,20 +366,20 @@ def test():
     #print(chord.to_midi_messages(note_on=True))
 
 
-def do_accompaniment(melody: Melody):
-    _chords = []
-    for note in melody.notes:
-        _chords.append(Melody.get_major_chord(note-36))
-    new_messages = accompany(melody.midi_messages, _chords)
-    melody.midi_file.tracks[1] = new_messages
-    print_midi_file(melody.midi_file)
-    melody.midi_file.save('output.mid')
-
 def save_accompaniment(acc: Accompaniment):
-    new_messages = accompany(melody.midi_messages, acc.chords)
-    melody.midi_file.tracks[1] = new_messages
-    #print_midi_file(melody.midi_file)
-    melody.midi_file.save('output.mid')
+    output_file = melody.midi_file
+    output_file.type = 1
+    melody_track = output_file.tracks[1]
+    #midi_data = melody.midi_file.tracks[0][0:2]
+    #melody_track = mido.MidiTrack()
+    chord_track = mido.MidiTrack()
+    #melody_track.extend(midi_data)
+    #melody_track.extend(melody.midi_file.tracks[1])
+    chord_track.extend(acc.to_midi(melody_track))
+    #output_file.tracks.append(midi_data)
+    #output_file.tracks.append(melody_track)
+    output_file.tracks.append(chord_track)
+    output_file.save('output.mid')
 
 
 melody = None

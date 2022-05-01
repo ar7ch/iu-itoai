@@ -1,13 +1,17 @@
 from __future__ import annotations
 import mido
 import numpy as np
+import sys
+import copy
 from matplotlib import pyplot as plt
 
 NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 OCTAVES = list(range(11))
 NOTES_IN_OCTAVE = len(NOTES)
 
-good_chords_major = {'C': ('C', 'Dm', 'Em', 'F', 'G', 'Am'),
+
+good_chords_major = {
+                     'C': ('C', 'Dm', 'Em', 'F', 'G', 'Am'),
                      'D': ('D', 'A#m', 'A', 'F#m', 'G', 'Em'),
                      'E': ('E', 'C#m', 'B', 'G#m', 'A', 'F#m'),
                      'F': ('F', 'Gm', 'Am', 'A#', 'C', 'Dm'),
@@ -15,8 +19,10 @@ good_chords_major = {'C': ('C', 'Dm', 'Em', 'F', 'G', 'Am'),
                      'A': ('A', 'F#m', 'C#m', 'E', 'D', 'A#m'),
                      'B': ('B', 'G#m', 'F#', 'D#m', 'E', 'C#m')
                      }
+
 tonic_pairs = {0: ('C', 'Am'), 1: ('G', 'Em'), 2: ('D', 'A#m'), 3: ('A', 'F#m'), 4: ('E', 'C#m'), 5: ('B', 'G#m'),
                6: ('F#', 'D#m')}
+
 
 
 def good_chords(tonic: str) -> str:
@@ -75,8 +81,8 @@ class Melody:
         sharp_notes = 0
         known_sharp = dict()
         for note in self.notes:
-            if '#' in note.note and note.note not in known_sharp:
-                known_sharp[note.note] = note.note
+            if '#' in note.note_char and note.note_char not in known_sharp:
+                known_sharp[note.note_char] = note.note_char
                 sharp_notes += 1
         key_pair = tonic_pairs[sharp_notes]
         return min_octave, key_pair
@@ -88,6 +94,33 @@ class Melody:
     @staticmethod
     def get_major_chord(base: Note) -> Chord:
         return Chord([base, base+4, base+7])
+
+    @staticmethod
+    def get_inv1(chord: Chord) -> Chord:
+        _notes = copy.deepcopy(chord.notes)
+        _notes[0].octave += 1
+        inv_chord = Chord(_notes, type='inv1')
+        return inv_chord
+
+    @staticmethod
+    def get_inv2(chord: Chord) -> Chord:
+        _notes = copy.deepcopy(chord.notes)
+        _notes[0].octave += 1
+        _notes[1].octave += 1
+        inv_chord = Chord(_notes, type='inv2')
+        return inv_chord
+
+    @staticmethod
+    def get_sus2(base: Note) -> Chord:
+        return Chord([base, base+2, base+7])
+
+    @staticmethod
+    def get_sus4(base: Note) -> Chord:
+        return Chord([base, base+5, base+7])
+
+    @staticmethod
+    def get_dim(base: Note) -> Chord:
+        return Chord([base, base+3, base+6])
 
 
     def generate_chords(self) -> tuple:
@@ -115,13 +148,13 @@ class Melody:
 
 
 class Note:
-    def __init__(self, note: str, octave: int, time_delta=0, midi_code=None):
-        assert(note in NOTES)
-        self.note = note
+    def __init__(self, note_char: str, octave: int, time_delta=0, midi_code=None):
+        assert(note_char in NOTES)
+        self.note_char = note_char
         self.octave = octave
         self.time_delta = time_delta
         self.velocity = 50
-        self.midi_code = midi_code if midi_code is not None else note_to_number(note, octave)
+        self.midi_code = midi_code if midi_code is not None else note_to_number(note_char, octave)
 
     @classmethod
     def from_midi(cls, midi_msg: mido.Message):
@@ -133,10 +166,10 @@ class Note:
 
     def __str__(self):
         #return f'{self.note}{self.octave}'
-        return f'{self.note}'
+        return f'{self.note_char}'
 
     def __repr__(self):
-        return f'{self.note}{self.octave}'
+        return f'{self.note_char}{self.octave}'
 
     def __add__(self, other: int):
         code = self.midi_code + other
@@ -176,18 +209,45 @@ def note_to_number(note: str, octave: int) -> int:
 
 
 class Chord:
-
-    def __init__(self, notes: list[Note], rest=False):
-        self.rest = rest
-        if not rest:
-            assert len(notes) > 2
-            self.notes = tuple(sorted(notes, key=lambda n: n.midi_code))
-            self.name = str(self.notes[0])
-            if self.notes[0].distance(self.notes[1]) == 3:
-                self.name = self.name + 'm'
-        else:
-            self.notes = tuple()
+    CHORD_TYPES = ['minor', 'major', 'inv1', 'inv2', 'dim', 'sus2', 'sus4', 'rest']
+    def __init__(self, notes: list[Note], type=None, name=None):
+        assert type in Chord.CHORD_TYPES
+        self.type = type
+        if type == 'rest':
             self.name = '<pause>'
+            return
+        assert len(notes) > 2
+        self.notes = sorted(notes, key=lambda n: n.midi_code)
+        self.name = name
+        if self.name is not None:
+            self.name = self.get_name()
+
+    def get_name(self) -> str:
+        assert type in Chord.CHORD_TYPES
+        name = str(self.root_note())
+        if self.type == 'major':
+            return
+        if self.type == 'minor':
+            name += 'm'
+        else:
+            name += self.type
+        return
+
+
+    def root_note(self) -> Note:
+        return self.notes[0]
+
+    def is_minor(self):
+        return self.notes[0].distance(self.notes[1]) == 3
+
+    def clone(self) -> Chord:
+        _notes = copy.deepcopy(self.notes)
+        return Chord(_notes, type=self.type)
+
+    @classmethod
+    def detect_type(notes) -> str:
+        # not really needed
+        pass
 
     @classmethod
     def get_rest_chord(cls):
@@ -213,7 +273,7 @@ class Chord:
 
     def has_note(self, note: Note):
         for n in self.notes:
-            if n.note == note.note:
+            if n.note_char == note.note_char:
                 return True
         return False
 
@@ -223,7 +283,7 @@ minor_chords = []
 major_chords = []
 
 
-def evolution(generations=1000, population_size=100, n_offsprings=80) -> Accompaniment:
+def evolution(generations=2000, population_size=100, n_offsprings=80) -> Accompaniment:
     population = initial_population(population_size)
     most_fit_individual = None
     most_fit_history = []
@@ -379,14 +439,14 @@ def save_accompaniment(acc: Accompaniment):
     #output_file.tracks.append(midi_data)
     #output_file.tracks.append(melody_track)
     output_file.tracks.append(chord_track)
-    output_file.save('output.mid')
+    output_file.save(f'output_{sys.argv[1]}.mid')
 
 
 melody = None
 def main():
     test()
     global melody
-    melody = Melody('barbiegirl_mono.mid')
+    melody = Melody(sys.argv[1])
     accompaniment = evolution()
     save_accompaniment(accompaniment)
     print('done')

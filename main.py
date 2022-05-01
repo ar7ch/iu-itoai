@@ -3,6 +3,7 @@ import mido
 import numpy as np
 import sys
 import copy
+import music21
 from matplotlib import pyplot as plt
 
 NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -10,24 +11,105 @@ OCTAVES = list(range(11))
 NOTES_IN_OCTAVE = len(NOTES)
 
 
-good_chords_major = {
-                     'C': ('C', 'Dm', 'Em', 'F', 'G', 'Am'),
-                     'D': ('D', 'A#m', 'A', 'F#m', 'G', 'Em'),
-                     'E': ('E', 'C#m', 'B', 'G#m', 'A', 'F#m'),
-                     'F': ('F', 'Gm', 'Am', 'A#', 'C', 'Dm'),
-                     'G': ('G', 'Em', 'C', 'Am', 'D'),
-                     'A': ('A', 'F#m', 'C#m', 'E', 'D', 'A#m'),
-                     'B': ('B', 'G#m', 'F#', 'D#m', 'E', 'C#m')
-                     }
 
 tonic_pairs = {0: ('C', 'Am'), 1: ('G', 'Em'), 2: ('D', 'A#m'), 3: ('A', 'F#m'), 4: ('E', 'C#m'), 5: ('B', 'G#m'),
                6: ('F#', 'D#m')}
 
 
+class Scale:
+    scale_chords_major = {
+        'C': ('C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim'),
+        'D': ('D', 'A#m', 'A', 'F#m', 'G', 'Em'),
+        'E': ('E', 'F#m', 'G#m', 'A', 'B', 'C#m', 'D#dim'),
+        'F': ('F', 'Gm', 'Am', 'A#', 'C', 'Dm'),
+        'G': ('G', 'Em', 'C', 'Am', 'D'),
+        'A': ('A', 'F#m', 'C#m', 'E', 'D', 'A#m'),
+        'B': ('B', 'G#m', 'F#', 'D#m', 'E', 'C#m')
+    }
+
+    scale_chords_minor = {
+        'C#m': ()
+    }
+
+    def __init__(self, scale_chords):
+        self.scale_chords = scale_chords
+
+    @classmethod
+    def generate_major_scales(cls):
+        # T -- T -- ST -- T -- T -- T -- ST
+        major_scale = [2, 2, 1, 2, 2, 2, 1]
+        major_scale_minor_chords = [2, 3, 6]
+        major_scale_dim_step = 7
+        for note_char in NOTES:
+            root = Note(note_char)
+            scale_list = []
+            for i, shift in enumerate(major_scale):
+                _ch = None
+                if i+1 in major_scale_minor_chords:
+                    _ch = Melody.get_minor_chord(root)
+                elif i+1 == major_scale_dim_step:
+                    _ch = Melody.get_dim(root)
+                else:
+                    _ch = Melody.get_major_chord(root)
+                scale_list.append(_ch)
+                root = root + shift
+            scale = Scale(scale_list)
+            cls.scale_chords_major[note_char] = Scale
+
+    @classmethod
+    def generate_minor_scales(cls):
+        # Tone – Semitone – Tone – Tone – Semitone – Tone – Tone
+        minor_scale = [2, 1, 2, 2, 1, 2, 2]
+        minor_scale_minor_chords = [1, 4, 5]
+        minor_scale_dim_step = 2
+        for note_char in NOTES:
+            root = Note(note_char)
+            scale_list = []
+            for i, shift in enumerate(minor_scale):
+                _ch = None
+                if i+1 in minor_scale_minor_chords:
+                    _ch = Melody.get_minor_chord(root)
+                elif i+1 == minor_scale_dim_step:
+                    _ch = Melody.get_dim(root)
+                else:
+                    _ch = Melody.get_major_chord(root)
+                scale_list.append(_ch)
+                root = root + shift
+
+            cls.scale_chords_minor[note_char] = scale_list
+
+
+    @classmethod
+    def from_key(cls, key: Chord) -> Scale:
+        """
+        Creates a Scale object using key chord (according to the lookup table)
+        :param key: key (tonic) chord
+        :return: a new Scale object
+        """
+        if key.type == 'major':
+            return cls(Scale.scale_chords_major[key.name])
+        elif key.type == 'minor':
+            return cls(Scale.scale_chords_minor[key.name])
+        else:
+            assert False
+
+    def tonic(self):
+        return self.scale_chords[0]
+
+    def mediant(self):
+        return self.scale_chords[2]
+
+    def subdominant(self):
+        return self.scale_chords[3]
+
+    def dominant(self):
+        return self.scale_chords[4]
+
+
 
 def good_chords(tonic: str) -> str:
     assert 'm' not in tonic
-    return good_chords_major[tonic]
+    return Scale.scale_chords_major[tonic]
 
 
 class Accompaniment:
@@ -51,7 +133,7 @@ class Accompaniment:
             chord = self.chords[c_ind]
             note_on = True if note_msg.type == 'note_on' else False
             _time = note_msg.time
-            chord_messages = chord.to_midi_messages(note_on=note_on, time=note_msg.time, velocity=40)
+            chord_messages = chord.to_midi_messages(note_on=note_on, time=note_msg.time, velocity=melody.notes[0].velocity-10)
             for chm in chord_messages:
                 chm.time = _time
                 _time = 0
@@ -65,14 +147,16 @@ class Accompaniment:
 class Melody:
     def __init__(self, midi_filename):
         # parse midi file
+        self.filename = midi_filename
         self.midi_file, self.midi_messages, self.notes = load_midi_file(midi_filename)
         # find minimal octave used and tonality of the melody
-        self.min_octave, self.key_pair = self.analyze_melody()
+        self.min_octave, self.key_pair, self_key = self.analyze_melody()
         # generate all chords suitable for this melody
         self.chords_dict, self.chords_list = self.generate_chords()
         self.chords_list = np.array(self.chords_list)
         # number of notes
         self.notes_num = len(self.notes)
+
 
     def analyze_melody(self):
         assert len(self.notes) > 0
@@ -80,20 +164,64 @@ class Melody:
         min_octave = sorted_by_octave[0].octave
         sharp_notes = 0
         known_sharp = dict()
+        notes_set = dict()
         for note in self.notes:
+            notes_set[note.note_char] = note
             if '#' in note.note_char and note.note_char not in known_sharp:
                 known_sharp[note.note_char] = note.note_char
                 sharp_notes += 1
         key_pair = tonic_pairs[sharp_notes]
-        return min_octave, key_pair
+        ordered_notes_set = sorted(list(notes_set.keys()), key=lambda x: x.midi_code)
+        key = self.try_detect_key(ordered_notes_set, key_pair)
+        return min_octave, key_pair, key
+
+    def try_detect_key(self, notes: list[Note], candidates_pair: tuple) -> Chord:
+        """
+        Finds the most probable candidate for a key of melody scale
+        :param notes: a list of notes
+        :param candidates_pair: two possible candidates (parallel keys)
+        :return: tonic chord for a given scale
+        """
+        if True:
+            key = str(music21.converter.parse(melody.input_file).analyze('key').upper())
+            key_char = key[0]
+            if key[1] == '#':
+                key_char += '#'
+            typ = key.split(' ')[0]
+            if typ == 'major':
+                return Melody.get_major_chord(Note(key_char, None))
+            return Melody.get_minor_chord(Note(key_char, None))
+        else:
+            scoreA = 0; scoreB = 0
+            keyA = candidates_pair[0]
+            scaleA = Scale.from_key(keyA)
+            keyB = candidates_pair[1]
+            scaleB = Scale.from_key(keyB)
+            # criterion 1: last note of the melody end with stable chord of the scale
+            # (tonic, mediant, dominant)
+            stableA = [scaleA.tonic().root_note(), scaleA.mediant().root_note(), scaleA.dominant().root_node()]
+            stableB = [scaleB.tonic().root_note(), scaleB.mediant().root_note(), scaleB.dominant().root_node()]
+            if notes[-1] in stableA:
+                scoreA += 100
+            if notes[-1] in stableB:
+                scoreB += 100
+            freqA = 0
+            freqB = 0
+            for note in notes:
+                if note == keyA.root_note():
+                    freqA += 1
+                elif note == keyB.root_note():
+                    freqB += 1
+
+
 
     @staticmethod
     def get_minor_chord(base: Note) -> Chord:
-        return Chord([base, base+3, base+7])
+        return Chord([base, base+3, base+7], type='minor')
 
     @staticmethod
     def get_major_chord(base: Note) -> Chord:
-        return Chord([base, base+4, base+7])
+        return Chord([base, base+4, base+7], type='major')
 
     @staticmethod
     def get_inv1(chord: Chord) -> Chord:
@@ -112,57 +240,54 @@ class Melody:
 
     @staticmethod
     def get_sus2(base: Note) -> Chord:
-        return Chord([base, base+2, base+7])
+        return Chord([base, base+2, base+7], type='sus2')
 
     @staticmethod
     def get_sus4(base: Note) -> Chord:
-        return Chord([base, base+5, base+7])
+        return Chord([base, base+5, base+7], type='sus4')
 
     @staticmethod
     def get_dim(base: Note) -> Chord:
-        return Chord([base, base+3, base+6])
+        return Chord([base, base+3, base+6], type='dim')
 
 
     def generate_chords(self) -> tuple:
         _chords_dict = dict()
         _chords = []
-        base = Note('C', 1) # consider all possible notes up to octave the melody itself uses
-        while base.octave != self.min_octave:
-            minor_chord = Melody.get_minor_chord(base)
-            major_chord = Melody.get_major_chord(base)
-            if major_chord.notes[2].octave == self.min_octave:
+        root_note = Note('C', 1) # consider all possible notes up to octave the melody itself uses
+        while root_note.octave != self.min_octave:
+            minor_chord = Melody.get_minor_chord(root_note)
+            major_chord = Melody.get_major_chord(root_note)
+            if major_chord.highest_note().octave == self.min_octave:
                 break
-            # todo add inv, sus
-            major_chord_name = str(base)
-            minor_chord_name = str(base)+'m'
-
             major_chords.append(major_chord)
             minor_chords.append(minor_chord)
-            _chords_dict[major_chord_name] = major_chord
-            _chords_dict[minor_chord_name] = minor_chord
+            _chords_dict[major_chord.name] = major_chord
+            _chords_dict[minor_chord.name] = minor_chord
             _chords.append(major_chord)
             _chords.append(minor_chord)
 
-            base = base + 1
+            root_note = root_note + 1
         return _chords_dict, _chords
 
 
 class Note:
-    def __init__(self, note_char: str, octave: int, time_delta=0, midi_code=None):
+    def __init__(self, note_char: str, octave=0, time_delta=0, midi_code=None, velocity=50):
         assert(note_char in NOTES)
         self.note_char = note_char
-        self.octave = octave
         self.time_delta = time_delta
-        self.velocity = 50
-        self.midi_code = midi_code if midi_code is not None else note_to_number(note_char, octave)
+        self.velocity = velocity
+        if octave is not None:
+            self.octave = octave
+            self.midi_code = midi_code if midi_code is not None else note_to_number(note_char, octave)
 
     @classmethod
-    def from_midi(cls, midi_msg: mido.Message):
+    def from_midi(cls, midi_msg: mido.Message, velocity=50):
         assert(midi_msg.type == 'note_off')
         note, octave = number_to_note(midi_msg.note)
         time_delta = midi_msg.time
         midi_code = midi_msg.note
-        return cls(note, octave, time_delta, midi_code)
+        return cls(note, octave, time_delta, midi_code, velocity=velocity)
 
     def __str__(self):
         #return f'{self.note}{self.octave}'
@@ -170,6 +295,13 @@ class Note:
 
     def __repr__(self):
         return f'{self.note_char}{self.octave}'
+
+    def __eq__(self, other: Note):
+        if self is other:
+            return True
+        if self.note_char == other.note_char:
+            return True
+        return False
 
     def __add__(self, other: int):
         code = self.midi_code + other
@@ -190,7 +322,7 @@ class Note:
             time = self.time_delta
         if velocity is None:
             velocity = self.velocity
-        return mido.Message(msg_type, note=self.midi_code, velocity=velocity, time=time, channel=1)
+        return mido.Message(msg_type, note=self.midi_code, velocity=velocity, time=time, channel=0)
 
 
 def number_to_note(number: int) -> tuple:
@@ -210,6 +342,7 @@ def note_to_number(note: str, octave: int) -> int:
 
 class Chord:
     CHORD_TYPES = ['minor', 'major', 'inv1', 'inv2', 'dim', 'sus2', 'sus4', 'rest']
+
     def __init__(self, notes: list[Note], type=None, name=None):
         assert type in Chord.CHORD_TYPES
         self.type = type
@@ -222,20 +355,27 @@ class Chord:
         if self.name is not None:
             self.name = self.get_name()
 
+    def __eq__(self, other):
+        return str(self) == str(other)
+
     def get_name(self) -> str:
         assert type in Chord.CHORD_TYPES
         name = str(self.root_note())
         if self.type == 'major':
-            return
-        if self.type == 'minor':
+            pass
+        elif self.type == 'minor':
             name += 'm'
         else:
             name += self.type
-        return
+        return name
+
 
 
     def root_note(self) -> Note:
         return self.notes[0]
+
+    def highest_note(self) -> Note:
+        return self.notes[-1]
 
     def is_minor(self):
         return self.notes[0].distance(self.notes[1]) == 3
@@ -399,9 +539,12 @@ def individual_fitness(acc: Accompaniment):
 
 def get_notes(midi_track) -> list:
     notes = []
+    velocity = 50
     for msg in midi_track:
+        if msg.type == 'note_on':
+            velocity = msg.velocity
         if msg.type == 'note_off':
-            notes.append(Note.from_midi(msg))
+            notes.append(Note.from_midi(msg, velocity))
     return notes
 
 

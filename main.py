@@ -122,6 +122,23 @@ class Scale:
     def dominant(self):
         return self.chords[4]
 
+    def is_sdt(self, seq: list[Chord]):
+        if len(seq) == 3:
+           if seq[0] == self.subdominant() and seq[1] == self.dominant() and seq[2] == self.tonic():
+               return True
+        return False
+
+    def is_st(self, seq: list[Chord]):
+        if len(seq) == 2:
+            if seq[0] == self.subdominant() and seq[1] == self.tonic():
+                return True
+        return False
+
+    def is_dt(self, seq: list[Chord]):
+        if len(seq) == 2:
+            if seq[0] == self.dominant() and seq[1] == self.tonic():
+                return True
+        return False
 
 
 class Accompaniment:
@@ -165,11 +182,10 @@ class Melody:
         self.min_octave, self.key_pair, key = self.analyze_melody()
         self.scale = Scale.from_key(key)
         # generate all chords suitable for this melody
-        self.chords_list = self.generate_chords()
+        self.chords_list = self.generate_chords(self.scale)
         self.chords_list = np.array(self.chords_list)
         # number of notes
         self.notes_num = len(self.notes)
-
 
     def analyze_melody(self):
         assert len(self.notes) > 0
@@ -284,7 +300,7 @@ class Melody:
             root_note = root_note + 1
         return _chords_dict, _chords"""
 
-    def generate_chords(self) -> list:
+    def generate_chords(self, scale) -> list:
         _chords = []
         for chord in self.scale.chords:
             # vary the octave from 0 to self.min_scale - 1
@@ -292,11 +308,23 @@ class Melody:
             for i in range(self.min_octave):
                 s_chord = chord.clone()
                 s_chord.shift_chord(i)
+                if s_chord.root().octave == self.min_octave:
+                    break
                 _chords.append(s_chord)
                 if i != self.min_octave - 1:
                     _chords.append(Melody.get_inv1(s_chord))
                     _chords.append(Melody.get_inv2(s_chord))
-                # todo generate sus
+                if s_chord.type == 'major':
+                    if scale.chords[7-1] != s_chord and scale.chords[3-1] != s_chord:
+                        _chords.append(Melody.get_sus2(s_chord.root()))
+                    if scale.chords[7-1] != s_chord and scale.chords[4-1] != s_chord:
+                        _chords.append(Melody.get_sus2(s_chord.root()))
+                if s_chord.type == 'minor':
+                    if scale.chords[2-1] != s_chord and scale.chords[5-1] != s_chord:
+                        _chords.append(Melody.get_sus4(s_chord.root()))
+                    if scale.chords[2-1] != s_chord and scale.chords[6-1] != s_chord:
+                        _chords.append(Melody.get_sus4(s_chord.root()))
+
         return _chords
 
 
@@ -390,6 +418,9 @@ class Chord:
     def __eq__(self, other):
         return str(self) == str(other)
 
+    def __neq__(self, other):
+        return str(self) != str(other)
+
     def get_name(self) -> str:
         assert self.type in Chord.CHORD_TYPES
         name = str(self.root_note())
@@ -407,6 +438,9 @@ class Chord:
 
     def root_note(self) -> Note:
         return self.notes[0]
+
+    def root(self) -> Note:
+        return self.root_note()
 
     def highest_note(self) -> Note:
         return self.notes[-1]
@@ -431,7 +465,7 @@ class Chord:
         return f'{self.name}'
 
     def __repr__(self):
-        return f'{self.name}{self.notes}'
+        return f'{self.name}'#{self.notes}'
 
     def to_midi_messages(self, note_on=True, time=None, velocity=None) -> list[mido.Message]:
         msgs = []
@@ -468,6 +502,7 @@ def evolution(generations=2000, population_size=100, n_offsprings=80) -> Accompa
     plt.title('Fitness score of the most fittest individual through generations\n')
     plt.grid(True)
     plt.show()
+    print(f"Generations passed: {generations}\nScore of the most fit: {most_fit_individual.fitness}")
     return most_fit_individual
 
 
@@ -547,13 +582,40 @@ def individual_fitness(acc: Accompaniment):
     LARGE_DIST_PENALTY = 5
     LARGE_SPAN_PENALTY = 10
     LOW_CHORDS_PENALTY = 10
+    INV_BONUS = 10
+    TOO_MANY_INVS_PENALTY = 100
+    PROG_BONUS = 10000
+    WRONG_DIST_PENALTY = 100
+
     penalty = 0
+    invs = 0
+    sus = 0
     max_dist = 1
-    min_octave = min(acc.chords, key=lambda c: c.notes[0].octave).notes[0].octave
+    min_octave = min(acc.chords, key=lambda c: c.root().octave).root().octave
     max_octave = max(acc.chords, key=lambda c: c.notes[2].octave).notes[2].octave
     max_octave_span = abs(max_octave - min_octave)
     for i in range(len(acc.chords)):
-        if not acc.chords[i].has_note(melody.notes[i]): # idea 1: chords that don't contain accompanying notes are very bad
+        chord = acc.chords[i]
+        notes = [*chord.notes, melody.notes[i]]
+        if notes[0].distance(notes[3]) > 24:
+            penalty -= 10*WRONG_DIST_PENALTY
+        #for i in range(3):
+        #    if notes[i].distance(notes[i+1]) in [1, 2, 10, 11]:
+        #        penalty -= WRONG_DIST_PENALTY
+        if 'inv' in chord.type and i+1 < len(acc.chords) and 'inv' not in acc.chords[i+1].type:
+            penalty += INV_BONUS
+            invs += 1
+
+        if 'sus' in chord.type:
+            sus += 1
+
+        seq = acc.chords[i:i+3:]
+        s = melody.scale
+        #if not 'inv' in chord.type:
+        if s.is_sdt(seq) or s.is_st(seq) or s.is_dt(seq):
+            penalty += PROG_BONUS
+        # idea 1: chords that don't contain accompanying notes are very bad
+        if not acc.chords[i].has_note(melody.notes[i]):
             penalty -= NOTE_NOT_IN_CHORD_PENALTY
         #if acc.chords[i].name not in Scale.good_chords_str(melody.key_pair[0]).chords:
         #    penalty -= BAD_CHORD_PENALTY
@@ -561,9 +623,14 @@ def individual_fitness(acc: Accompaniment):
             dist = acc.chords[i].distance(acc.chords[i+1])
             if dist > max_dist:
                 max_dist = dist
+    rate = 0.5
+    if invs > int(rate*len(acc.chords)):
+        penalty -= TOO_MANY_INVS_PENALTY*(invs - int(rate*len(acc.chords)))
     penalty -= max_dist*LARGE_DIST_PENALTY # idea 2: distance between chords are undesirable
     if min_octave <= 0:
         penalty -= LOW_CHORDS_PENALTY + min_octave*LOW_CHORDS_PENALTY
+    if sus > int(rate*len(acc.chords)):
+        penalty -= TOO_MANY_INVS_PENALTY*(invs - int(rate*len(acc.chords)))
     penalty -= max_octave_span*LARGE_SPAN_PENALTY
     return penalty
 
@@ -618,6 +685,7 @@ def save_accompaniment(acc: Accompaniment):
     save_file = f'output_{sys.argv[1].split(".")[0]}.mid'
     print('Saved result as', save_file)
     output_file.save(save_file)
+
 
 
 melody = None

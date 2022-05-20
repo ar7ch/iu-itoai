@@ -7,10 +7,6 @@ import copy
 import music21
 from matplotlib import pyplot as plt
 
-__author__ = "Artem Bulgakov, BS20-02"
-__email__ = "ar.bulgakov@innopolis.university"
-
-
 class Scale:
     """
     Representation of a musical scale.
@@ -258,7 +254,7 @@ class Melody:
 
     def try_detect_key(self, notes: list[Note], candidates_pair: tuple) -> Chord:
         """
-        Finds the most probable candidate for a key of melody scale
+        Finds candidate for a key of the melody scale
         :param notes: a list of notes
         :param candidates_pair: two possible candidates (parallel keys)
         :return: tonic chord for a given scale
@@ -286,24 +282,14 @@ class Melody:
             for i in range(self.min_octave):
                 s_chord = chord.clone()
                 s_chord.shift_chord(i)
-                if s_chord.root().octave == self.min_octave:
+                if s_chord.max_octave() >= self.min_octave:
                     break
                 _chords.append(s_chord)
-                if i != self.min_octave - 1:
-                    _chords.append(Chord.get_inv1(s_chord))
-                    _chords.append(Chord.get_inv2(s_chord))
-                """
-                if s_chord.type == 'major':
-                    if scale.chords[7-1] != s_chord and scale.chords[3-1] != s_chord:
-                        _chords.append(Chord.get_sus2(s_chord.root()))
-                    if scale.chords[7-1] != s_chord and scale.chords[4-1] != s_chord:
-                        _chords.append(Chord.get_sus2(s_chord.root()))
-                if s_chord.type == 'minor':
-                    if scale.chords[2-1] != s_chord and scale.chords[5-1] != s_chord:
-                        _chords.append(Chord.get_sus4(s_chord.root()))
-                    if scale.chords[2-1] != s_chord and scale.chords[6-1] != s_chord:
-                        _chords.append(Chord.get_sus4(s_chord.root()))"""
-
+                inv1 = Chord.get_inv1(s_chord)
+                inv2 = Chord.get_inv2(s_chord)
+                if inv2.max_octave() < self.min_octave:
+                    _chords.append(inv1)
+                    _chords.append(inv2)
         return _chords
 
 
@@ -332,6 +318,12 @@ class Note:
 
     @staticmethod
     def number_to_note_char(number: int) -> tuple:
+        """
+        Converts MIDI note number to a (note_char, octave) tuple.
+        Based on this snippet: https://gist.github.com/devxpy/063968e0a2ef9b6db0bd6af8079dad2a
+        :param number: MIDI number
+        :return: a (note_char, octave) tuple.
+        """
         assert 0 <= number <= 127
         octave = number // len(Note.NOTES)
         note = Note.NOTES[number % len(Note.NOTES)]
@@ -339,6 +331,13 @@ class Note:
 
     @staticmethod
     def note_char_to_number(note: str, octave: int) -> int:
+        """
+        Converts (note_char, octave) to a MIDI note number.
+        Based on this snippet: https://gist.github.com/devxpy/063968e0a2ef9b6db0bd6af8079dad2a
+        :param note: note character
+        :param octave: octave number
+        :return: MIDI number
+        """
         octave += 2  # midi octave correction when converting to midi
         assert note in Note.NOTES
         assert -2 <= octave <= 6
@@ -558,6 +557,9 @@ class Chord:
                 return True
         return False
 
+    def max_octave(self) -> int:
+        return max(self.notes, key=lambda x: x.octave).octave
+
     @staticmethod
     def get_minor_chord(root_note: Note) -> Chord:
         """
@@ -608,7 +610,7 @@ class Chord:
         :param root_note: note to build chord from
         :return: suspended chord
         """
-        return Chord([root_note, root_note + 2, root_note + 7], ctype='sus2')
+        return Chord([root_note, root_note + 2, root_note + 7], ctype='sus2') # too large difference in octaves between the melody and the chords
 
     @staticmethod
     def get_sus4(root_note: Note) -> Chord:
@@ -632,19 +634,27 @@ class Chord:
 def evolution(generations=2000, population_size=100, offsprings=80) -> tuple:
     """
     High-level evolutionary algorithm.
+    Inspired by Lab 9 code and heavily reworked.
     :param generations: number of generations passed
     :param population_size: number of individuals in
     :param offsprings: number of children born by every generation
     :return: most fit individual
     """
-    population = initial_population(population_size)
-    most_fit_individual = None
-    most_fit_history = []
-    for i in range(generations):
-        population = evolution_step(population, offsprings)
-        most_fit_individual = population[-1]
-        most_fit_history.append(most_fit_individual.fitness)
-    return most_fit_individual, generations, most_fit_history
+    EVOLUTION_TRIALS = 2
+    m_most_fit_individual = None
+    m_most_fit_history = None
+    for i in range(EVOLUTION_TRIALS):
+        population = initial_population(population_size)
+        most_fit_individual = None
+        most_fit_history = []
+        for i in range(generations):
+            population = evolution_step(population, offsprings)
+            most_fit_individual = population[-1]
+            most_fit_history.append(most_fit_individual.fitness)
+        if m_most_fit_individual is None or most_fit_individual.fitness > m_most_fit_individual.fitness:
+            m_most_fit_individual = most_fit_individual
+            m_most_fit_history = most_fit_history
+    return m_most_fit_individual, generations, m_most_fit_history
 
 
 def select_fittest(population: list[Accompaniment], new_individuals: list[Accompaniment]) -> list[Accompaniment]:
@@ -666,6 +676,7 @@ def select_fittest(population: list[Accompaniment], new_individuals: list[Accomp
 def evolution_step(population: list[Accompaniment], offsprings: int) -> list[Accompaniment]:
     """
     Evolution step for one generation (breeding and selection of the fittest)
+    Inspired by Lab 9 code and heavily reworked.
     :param population: list of individuals
     :param offsprings: number of offsprings (or, equivalently, number of children)
     :return: updated population
@@ -771,52 +782,58 @@ def individual_fitness(acc: Accompaniment) -> int:
     for i in range(len(acc.chords)):
         chord = acc.chords[i]
         notes = [*chord.notes, melody.notes[i]]
-        if notes[0].distance(notes[3]) > 24:
+        if notes[0].distance(notes[3]) > 24: # too large difference in octaves between the melody and the chords
             penalty -= 10*WRONG_DIST_PENALTY
-        #for i in range(3):
-        #    if notes[i].distance(notes[i+1]) in [1, 2, 10, 11]:
-        #        penalty -= WRONG_DIST_PENALTY
+        for i in range(3):
+            if notes[i].distance(notes[i+1]) in [1, 2, 10, 11]:
+                penalty -= WRONG_DIST_PENALTY
+        # some inverted chords are good, but not too much
         if 'inv' in chord.type and i+1 < len(acc.chords) and 'inv' not in acc.chords[i+1].type:
             penalty += INV_BONUS
             invs += 1
-
         if 'sus' in chord.type:
             sus += 1
-
+        # take a sequence of 3 or less subsequent chords
         seq = acc.chords[i:i+3:]
         s = melody.scale
-        #if not 'inv' in chord.type:
+        # reward good scale progressions
         if s.is_sdt(seq) or s.is_st(seq) or s.is_dt(seq):
             penalty += PROG_BONUS
-        # idea 1: chords that don't contain accompanying notes are very bad
+        # chords that don't contain accompanying notes are very bad
         if not acc.chords[i].has_note(melody.notes[i]):
             penalty -= NOTE_NOT_IN_CHORD_PENALTY
-        #if acc.chords[i].name not in Scale.good_chords_str(melody.key_pair[0]).chords:
-        #    penalty -= BAD_CHORD_PENALTY
         if i != len(acc.chords) - 1:
             dist = acc.chords[i].distance(acc.chords[i+1])
             if dist > max_dist:
                 max_dist = dist
-    rate = 0.4
+    # fraction of inverted chords should not exceed the rate, otherwise it will just be the melody one octave higher
+    rate = 0.3
     if invs > int(rate*len(acc.chords)):
         penalty -= TOO_MANY_INVS_PENALTY*(invs - int(rate*len(acc.chords)))
-    penalty -= max_dist*LARGE_DIST_PENALTY  # idea 2: distance between chords are undesirable
-    if min_octave <= 0:
+
+    penalty -= max_dist*LARGE_DIST_PENALTY  # large distance between chords are undesirable
+    if min_octave <= 0: # low notes are also undesirable
         penalty -= LOW_CHORDS_PENALTY + min_octave*LOW_CHORDS_PENALTY
-    if sus > int(rate*len(acc.chords)):
+    if sus > int(rate*len(acc.chords)): # large number of sus'es are undesirable
         penalty -= TOO_MANY_INVS_PENALTY*(invs - int(rate*len(acc.chords)))
     penalty -= max_octave_span*LARGE_SPAN_PENALTY
     return penalty
 
 
-def get_notes(midi_track) -> list[Note]:
+def get_notes(midi_file: mido.MidiFile) -> list[Note]:
+    """
+    Parses the MIDI messages.
+    :param midi_file: MidiFile object containing tracks
+    :return: a list of Note objects, converted from corresponding MidiTrack messages.
+    """
     notes = []
     velocity = 50
-    for msg in midi_track:
-        if msg.type == 'note_on':
-            velocity = msg.velocity
-        if msg.type == 'note_off':
-            notes.append(Note.from_midi(msg, velocity))
+    for midi_track in midi_file.tracks:
+        for msg in midi_track:
+            if msg.type == 'note_on':
+                velocity = msg.velocity
+            if msg.type == 'note_off':
+                notes.append(Note.from_midi(msg, velocity))
     return notes
 
 
@@ -829,7 +846,7 @@ def load_midi_file(filename: str) -> tuple:
     mid = mido.MidiFile(filename)
     # get array of notes
     track = mid.tracks[1]
-    notes = get_notes(track)
+    notes = get_notes(mid)
     return mid, track, notes
 
 
@@ -848,7 +865,7 @@ def save_accompaniment(acc: Accompaniment):
     print('Resulting accompaniment: ')
     print(acc.chords)
     fname = os.path.basename(melody.filename)
-    save_file = f'output_{fname}'
+    save_file = f'Output{fname}'
     print('Saved result as', save_file)
     output_file.save(save_file)
 
@@ -865,9 +882,11 @@ def draw_plot(generations: int, most_fit_history: list[Accompaniment]):
     plt.title(f'Fitness score of the most fittest individual through generations\n{os.path.basename(melody.filename)}')
     plt.grid(True)
     plt.show()
-    plt.savefig("plot.svg")
 
 def main():
+    if len(sys.argv) != 2:
+        print(f'Usage: {sys.argv[0]} <midi input file>')
+        sys.exit(1)
     global melody
     melody = Melody(os.path.abspath(sys.argv[1]))
     accompaniment, generations, most_fit_history = evolution()

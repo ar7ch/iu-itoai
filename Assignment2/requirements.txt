@@ -1,0 +1,4 @@
+numpy
+matplotlib
+mido
+music21
